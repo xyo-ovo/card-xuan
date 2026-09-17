@@ -1,9 +1,11 @@
-/* 赛博塔罗 · 应用逻辑 */
+/* 赛博塔罗 · 应用逻辑 v2 */
 (function(){
 'use strict';
 
 var $ = function(id){ return document.getElementById(id); };
 var CFG_KEY = 'cybertarot_cfg_v1';
+var HIS_KEY = 'cybertarot_history_v1';
+var MODELS_KEY = 'cybertarot_models_v1';
 
 var PRESETS = {
   deepseek: {url:'https://api.deepseek.com/v1', model:'deepseek-chat'},
@@ -21,7 +23,35 @@ var SPREADS = {
 
 var CDN = 'https://cdn.jsdelivr.net/gh/feng5166/cyberfate@08d03879936946e9e014ac15aa389271c4d24af2/public/images/tarot/cards/';
 
-var state = { spread:1, question:'', reading:[], positions:[], spreadName:'', busy:false };
+var state = { spread:1, question:'', reading:[], positions:[], spreadName:'', busy:false, recordId:null, recordSaved:false };
+
+/* ---------- 小工具 ---------- */
+function pad(n){ return String(n).padStart(2,'0'); }
+function shuffle(a){
+  for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i];a[i]=a[j];a[j]=t; }
+  return a;
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g, function(m){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]; }); }
+function mdRender(s){
+  var h = escapeHtml(s);
+  h = h.replace(/^\s*#{2,4}\s*(.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  h = h.replace(/\n/g,'<br>');
+  return h;
+}
+function imgUrl(c){ return CDN + c.a + '/' + c.k + '.webp'; }
+function backupUrl(c){ return 'https://commons.wikimedia.org/wiki/Special:FilePath/' + encodeURIComponent(c.w) + '?width=420'; }
+window.taroImgErr = function(img){
+  if(img.dataset.fb !== '1'){ img.dataset.fb = '1'; img.src = img.dataset.backup; }
+  else { img.style.display = 'none'; img.closest('.tcard').classList.add('noimg'); }
+};
+function toast(msg){
+  var d = document.createElement('div');
+  d.textContent = msg;
+  d.style.cssText = 'position:fixed;left:50%;bottom:44px;transform:translateX(-50%);z-index:99;padding:11px 22px;border-radius:999px;background:rgba(38,22,66,.95);border:1px solid rgba(230,198,125,.5);color:#f8e3a3;font-size:.92rem;letter-spacing:.08em;box-shadow:0 10px 30px rgba(0,0,0,.5);transition:opacity .3s;font-family:inherit;max-width:88vw;';
+  document.body.appendChild(d);
+  setTimeout(function(){ d.style.opacity='0'; setTimeout(function(){ d.remove(); }, 320); }, 1900);
+}
 
 /* ---------- 星空背景 ---------- */
 (function(){
@@ -65,33 +95,6 @@ var state = { spread:1, question:'', reading:[], positions:[], spreadName:'', bu
   init(); requestAnimationFrame(tick);
 })();
 
-/* ---------- 小工具 ---------- */
-function shuffle(a){
-  for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i];a[i]=a[j];a[j]=t; }
-  return a;
-}
-function escapeHtml(s){ return String(s).replace(/[&<>"]/g, function(m){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]; }); }
-function mdRender(s){
-  var h = escapeHtml(s);
-  h = h.replace(/^\s*#{2,4}\s*(.+)$/gm, '<h3>$1</h3>');
-  h = h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
-  h = h.replace(/\n/g,'<br>');
-  return h;
-}
-function imgUrl(c){ return CDN + c.a + '/' + c.k + '.webp'; }
-function backupUrl(c){ return 'https://commons.wikimedia.org/wiki/Special:FilePath/' + encodeURIComponent(c.w) + '?width=420'; }
-window.taroImgErr = function(img){
-  if(img.dataset.fb !== '1'){ img.dataset.fb = '1'; img.src = img.dataset.backup; }
-  else { img.style.display = 'none'; img.closest('.tcard').classList.add('noimg'); }
-};
-function toast(msg){
-  var d = document.createElement('div');
-  d.textContent = msg;
-  d.style.cssText = 'position:fixed;left:50%;bottom:44px;transform:translateX(-50%);z-index:99;padding:11px 22px;border-radius:999px;background:rgba(38,22,66,.95);border:1px solid rgba(232,201,122,.5);color:#ffdf8e;font-size:.92rem;letter-spacing:.08em;box-shadow:0 10px 30px rgba(0,0,0,.5);transition:opacity .3s;font-family:inherit;';
-  document.body.appendChild(d);
-  setTimeout(function(){ d.style.opacity='0'; setTimeout(function(){ d.remove(); }, 320); }, 1900);
-}
-
 /* ---------- 抽牌与渲染 ---------- */
 function draw(){
   var sp = SPREADS[state.spread];
@@ -101,6 +104,8 @@ function draw(){
   state.reading = picked.map(function(c){ return { card:c, reversed: Math.random()<0.5, revealed:false }; });
   state.positions = sp.positions;
   state.spreadName = sp.name;
+  state.recordId = null;
+  state.recordSaved = false;
   renderTable();
 }
 
@@ -141,6 +146,7 @@ $('cardTable').addEventListener('click', function(e){
   var slot = card.closest('.slot');
   slot.querySelector('.slot-label').textContent = state.positions[idx] + ' · ' + r.card.n + (r.reversed?'（逆位）':'');
   if(state.reading.every(function(x){ return x.revealed; })){
+    saveRecord();
     setTimeout(function(){
       $('stepRead').hidden = false;
       $('stepRead').scrollIntoView({behavior:'smooth', block:'start'});
@@ -177,6 +183,95 @@ $('againBtn').addEventListener('click', function(){
   $('stepSetup').scrollIntoView({behavior:'smooth'});
 });
 
+/* ---------- 抽牌记录 ---------- */
+function loadHistory(){
+  try{ return JSON.parse(localStorage.getItem(HIS_KEY)||'[]'); }catch(e){ return []; }
+}
+function saveRecord(){
+  if(state.recordSaved) return;
+  state.recordSaved = true;
+  var list = loadHistory();
+  var item = {
+    id: Date.now(),
+    time: Date.now(),
+    spreadName: state.spreadName,
+    question: state.question,
+    positions: state.positions.slice(),
+    cards: state.reading.map(function(r){ return {n:r.card.n, s:r.card.s, reversed:r.reversed}; }),
+    ai: ''
+  };
+  state.recordId = item.id;
+  list.unshift(item);
+  if(list.length > 50) list = list.slice(0, 50);
+  try{ localStorage.setItem(HIS_KEY, JSON.stringify(list)); }catch(e){}
+}
+function updateRecordAi(text){
+  if(!state.recordId || !text) return;
+  var list = loadHistory();
+  for(var i=0;i<list.length;i++){
+    if(list[i].id === state.recordId){ list[i].ai = text; break; }
+  }
+  try{ localStorage.setItem(HIS_KEY, JSON.stringify(list)); }catch(e){}
+}
+function fmtTime(ts){
+  var d = new Date(ts), now = new Date();
+  var hm = pad(d.getHours())+':'+pad(d.getMinutes());
+  if(d.toDateString() === now.toDateString()) return '今天 '+hm;
+  var y = new Date(now.getTime()-86400000);
+  if(d.toDateString() === y.toDateString()) return '昨天 '+hm;
+  return (d.getMonth()+1)+'/'+d.getDate()+' '+hm;
+}
+function renderHistory(){
+  var list = loadHistory();
+  var box = $('hisList');
+  if(!list.length){
+    box.innerHTML = '<div class="his-empty">还没有记录哦～<br>抽一次牌就会自动存进来 ✨</div>';
+    return;
+  }
+  box.innerHTML = list.map(function(it){
+    var cards = it.cards.map(function(c){ return c.s + c.n + (c.reversed?'(逆)':''); }).join(' · ');
+    return '<div class="his-item" data-id="' + it.id + '">' +
+      '<div class="his-head"><span class="his-time">' + fmtTime(it.time) + '</span><span class="his-spread">' + it.spreadName + ' · ' + it.cards.length + ' 张</span></div>' +
+      (it.question ? '<div class="his-q">' + escapeHtml(it.question) + '</div>' : '') +
+      '<div class="his-cards">' + cards + '</div>' +
+      (it.ai ? '<div class="his-mark">🔮 已解读</div>' : '') +
+      '<div class="his-detail" hidden>' +
+        it.cards.map(function(c,i){
+          return '<div class="hd-line">' + (it.positions[i]||'') + ' · ' + c.s + ' ' + c.n + (c.reversed?'（逆位）':'（正位）') + '</div>';
+        }).join('') +
+        (it.ai ? '<div class="hd-ai">' + mdRender(it.ai) + '</div>' : '<div class="hd-noai">（这次没有留下 AI 解读）</div>') +
+        '<div class="hd-actions"><button class="hd-del" data-del="' + it.id + '">删除这条</button></div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+$('hisList').addEventListener('click', function(e){
+  var del = e.target.closest('[data-del]');
+  if(del){
+    e.stopPropagation();
+    var list = loadHistory().filter(function(it){ return it.id !== +del.dataset.del; });
+    try{ localStorage.setItem(HIS_KEY, JSON.stringify(list)); }catch(err){}
+    renderHistory();
+    toast('已删除 ✓');
+    return;
+  }
+  var item = e.target.closest('.his-item');
+  if(!item) return;
+  var det = item.querySelector('.his-detail');
+  if(det) det.hidden = !det.hidden;
+});
+$('hisBtn').addEventListener('click', function(){ renderHistory(); $('hisModal').hidden = false; });
+$('hisClose').addEventListener('click', function(){ $('hisModal').hidden = true; });
+$('hisModal').addEventListener('click', function(e){ if(e.target === $('hisModal')) $('hisModal').hidden = true; });
+$('hisClear').addEventListener('click', function(){
+  if(!loadHistory().length){ toast('还没有记录哦'); return; }
+  if(confirm('确定清空全部抽牌记录吗？')) {
+    try{ localStorage.removeItem(HIS_KEY); }catch(e){}
+    renderHistory();
+    toast('记录已清空');
+  }
+});
+
 /* ---------- 复制牌面 ---------- */
 function copyText(){
   var q = state.question || '（未填写问题）';
@@ -185,7 +280,6 @@ function copyText(){
     t += (i+1) + '. ' + state.positions[i] + '：' + r.card.n + (r.reversed?'（逆位）':'（正位）') + '\n';
   });
   var d = new Date();
-  var pad = function(n){ return String(n).padStart(2,'0'); };
   t += '\n—— ' + d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' 抽于赛博塔罗';
   return t;
 }
@@ -214,6 +308,7 @@ function openModal(){
   $('baseUrl').value = cfg.url || p.url;
   $('apiKey').value = cfg.key || '';
   $('model').value = cfg.model || p.model;
+  restoreModelList();
   $('modal').hidden = false;
 }
 function buildMessages(){
@@ -228,7 +323,7 @@ function buildMessages(){
     {role:'user', content:'【我的问题】' + q + '\n【牌阵】' + state.spreadName + '（共' + state.reading.length + '张）\n【抽牌结果】\n' + lines}
   ];
 }
-function streamChat(cfg, messages, onDelta){
+function streamChat(cfg, messages, onDelta, onReasoning){
   var url = cfg.url.replace(/\/+$/,'') + '/chat/completions';
   return fetch(url, {
     method:'POST',
@@ -256,8 +351,11 @@ function streamChat(cfg, messages, onDelta){
           if(payload === '[DONE]') return full;
           try{
             var j = JSON.parse(payload);
-            var d = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
-            if(d){ full += d; onDelta(d); }
+            var d = j.choices && j.choices[0] && j.choices[0].delta;
+            if(!d) continue;
+            var rc = d.reasoning_content || d.reasoning;
+            if(rc && onReasoning) onReasoning(rc);
+            if(d.content){ full += d.content; onDelta(d.content); }
           }catch(e){}
         }
         return pump();
@@ -278,13 +376,37 @@ $('aiBtn').addEventListener('click', function(){
   var btn = $('aiBtn');
   btn.disabled = true; btn.textContent = '解读中…';
   var box = $('aiBox');
-  box.innerHTML = '<div class="placeholder">✨ 星野正在为你解读，请稍候…</div>';
-  var full = '';
+  box.innerHTML =
+    '<details class="think" id="thinkBox" hidden><summary id="thinkSum">💭 思考过程</summary><div class="think-body" id="thinkBody"></div></details>' +
+    '<div id="ansBody"><div class="placeholder">✨ 星野正在为你解读，请稍候…</div></div>';
+  var full = '', hasThink = false, folded = false;
   streamChat(cfg, buildMessages(), function(d){
     full += d;
-    box.innerHTML = mdRender(full) + '<span style="opacity:.6">▍</span>';
+    if(hasThink && !folded){
+      folded = true;
+      var tb = $('thinkBox');
+      if(tb) tb.open = false;
+      var ts = $('thinkSum');
+      if(ts) ts.textContent = '💭 思考过程（点击展开）';
+    }
+    var ab = $('ansBody');
+    if(ab) ab.innerHTML = mdRender(full) + '<span class="cursor">▍</span>';
+  }, function(d){
+    hasThink = true;
+    var tb = $('thinkBox'), tbody = $('thinkBody'), ts = $('thinkSum');
+    if(!tb) return;
+    tb.hidden = false;
+    if(ts) ts.textContent = '💭 思考中…（点击展开/收起）';
+    if(tbody){
+      tbody.textContent += d;
+      if(tb.open) tbody.scrollTop = tbody.scrollHeight;
+    }
   }).then(function(){
-    box.innerHTML = mdRender(full || '（接口没有返回内容，请检查模型名是否正确）');
+    var tb = $('thinkBox'), ts = $('thinkSum');
+    if(tb && hasThink){ tb.open = false; if(ts) ts.textContent = '💭 思考过程（点击展开）'; }
+    var ab = $('ansBody');
+    if(ab) ab.innerHTML = mdRender(full || '（接口没有返回内容，请检查模型名是否正确）');
+    updateRecordAi(full);
   }).catch(function(err){
     box.innerHTML = '<div class="err">解读失败：' + escapeHtml(err.message || String(err)) +
       '<br><br>小提示：请确认 ⚙ 设置里的接口地址、Key、模型名正确；如果浏览器提示跨域错误，说明该接口不允许网页直接调用，可换一个支持跨域的接口。</div>';
@@ -295,6 +417,15 @@ $('aiBtn').addEventListener('click', function(){
 });
 
 /* ---------- 设置面板 ---------- */
+function fillModelList(ids){
+  $('modelList').innerHTML = ids.map(function(id){ return '<option value="' + escapeHtml(id) + '">'; }).join('');
+}
+function restoreModelList(){
+  try{
+    var saved = JSON.parse(localStorage.getItem(MODELS_KEY)||'[]');
+    if(saved.length) fillModelList(saved);
+  }catch(e){}
+}
 $('settingsBtn').addEventListener('click', openModal);
 $('closeModal').addEventListener('click', function(){ $('modal').hidden = true; });
 $('modal').addEventListener('click', function(e){ if(e.target === $('modal')) $('modal').hidden = true; });
@@ -302,6 +433,26 @@ $('provSel').addEventListener('change', function(){
   var v = $('provSel').value;
   var p = PRESETS[v];
   if(p && v !== 'custom'){ $('baseUrl').value = p.url; $('model').value = p.model; }
+});
+$('refreshModels').addEventListener('click', function(){
+  var url = $('baseUrl').value.trim().replace(/\/+$/,'');
+  var key = $('apiKey').value.trim();
+  if(!url){ toast('先把接口地址填上～'); return; }
+  var btn = $('refreshModels');
+  btn.disabled = true; btn.textContent = '获取中…';
+  fetch(url + '/models', { headers: key ? {'Authorization':'Bearer ' + key} : {} })
+    .then(function(r){ if(!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(j){
+      var arr = j.data || j.models || [];
+      var ids = arr.map(function(m){ return (typeof m === 'string') ? m : (m.id || m.name || ''); }).filter(Boolean);
+      if(!ids.length) throw new Error('接口没有返回模型列表');
+      ids.sort();
+      fillModelList(ids);
+      try{ localStorage.setItem(MODELS_KEY, JSON.stringify(ids)); }catch(e){}
+      toast('已获取 ' + ids.length + ' 个模型，点输入框就能选 ✓');
+    })
+    .catch(function(e){ toast('获取失败：' + (e.message || e)); })
+    .then(function(){ btn.disabled = false; btn.textContent = '🔄 刷新列表'; });
 });
 $('saveCfg').addEventListener('click', function(){
   localStorage.setItem(CFG_KEY, JSON.stringify({
